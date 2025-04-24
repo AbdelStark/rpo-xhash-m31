@@ -1,8 +1,8 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use rand::{RngCore, SeedableRng, rngs::StdRng};
+use rand::{RngCore, SeedableRng, rngs::SmallRng};
 use rpo_xhash_m31::{Felt, RpoM31, STATE_WIDTH, Sponge, XHashM31};
 
-fn create_random_state(rng: &mut StdRng) -> [Felt; STATE_WIDTH] {
+fn create_random_state(rng: &mut SmallRng) -> [Felt; STATE_WIDTH] {
     let mut state = [Felt::default(); STATE_WIDTH];
     for elem in state.iter_mut() {
         *elem = Felt::from(rng.next_u32());
@@ -12,7 +12,7 @@ fn create_random_state(rng: &mut StdRng) -> [Felt; STATE_WIDTH] {
 
 fn bench_permutations(c: &mut Criterion) {
     let mut group = c.benchmark_group("Permutations");
-    let mut rng = StdRng::seed_from_u64(42);
+    let mut rng = SmallRng::seed_from_u64(42);
 
     group.bench_function("RpoM31::apply", |b| {
         let mut state = create_random_state(&mut rng);
@@ -29,7 +29,7 @@ fn bench_permutations(c: &mut Criterion) {
 
 fn bench_sponge(c: &mut Criterion) {
     let mut group = c.benchmark_group("Sponge Operations");
-    let mut rng = StdRng::seed_from_u64(42);
+    let mut rng = SmallRng::seed_from_u64(42);
     let data_sizes = [64, 256, 1024, 4096]; // Bytes
 
     for size in data_sizes.iter() {

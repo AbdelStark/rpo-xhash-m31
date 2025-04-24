@@ -1,4 +1,5 @@
 use num_traits::identities::Zero;
+use rand::SeedableRng;
 use rpo_xhash_m31::{Felt, RpoM31, Sponge, XHashM31, mds};
 
 /// A *very* small monte-carlo test that the two permutations disagree on random input.
@@ -35,7 +36,7 @@ fn padding_domain_separation() {
 /// Verify that the 24×24 MDS matrix is invertible (max distance separable).
 #[test]
 fn mds_is_invertible() {
-    use stwo_prover::core::fields::m31::M31;
+    use rpo_xhash_m31::fields::m31::M31;
 
     // Naïve O(n³) Gaussian elimination over the field.
     // 24 is small → fine for a unit-test.
@@ -108,10 +109,10 @@ fn deterministic_output() {
 #[test]
 fn short_messages_never_overflow_rate() {
     use rand::Rng;
-    let mut rng = rand::rng();
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(0);
     for _ in 0..10_000 {
         let mut sp: Sponge<RpoM31> = Sponge::new();
-        let len = rng.random_range(0..3); // 0-2 bytes
+        let len = rng.gen_range(0..3); // 0-2 bytes
         let mut buf = vec![0u8; len];
         rng.fill(buf.as_mut_slice());
         sp.absorb_bytes(&buf);

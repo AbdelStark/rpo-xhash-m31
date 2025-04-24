@@ -34,18 +34,17 @@
 //! println!("XHash digest element 0: {:?}", xhash_digest[0]);
 //! ```
 
+pub mod fields;
+
 //  ---------------------------------------------------------------------------
 //  Field aliases & helpers
 //  ---------------------------------------------------------------------------
 use digest::{ExtendableOutput, Update, XofReader};
-use sha3::Shake256;
-/// Re-export the M31 field element type `M31` as `Felt` for convenience.
-/// Re-export the M31 modulus `P` for reference.
-/// Re-export `FieldExpOps` for blanket implementations using `pow`.
-pub use stwo_prover::core::fields::{
+pub use fields::{
     FieldExpOps,
     m31::{M31 as Felt, P as MODULUS},
 };
+use sha3::Shake256;
 use tinyvec::ArrayVec;
 
 /// The width of the permutation state in field elements (24).
@@ -631,16 +630,15 @@ fn mul_matrix(state: &mut [Felt; STATE_WIDTH], m: &[[Felt; STATE_WIDTH]; STATE_W
 /// Unit tests for the RPO/XHash components.
 mod tests {
     use super::*;
-    use rand::Rng;
-    // Note: `rand::rng` might be deprecated; consider `rand::thread_rng()` if updating.
-    use rand::rng;
+    use rand::rngs::SmallRng;
+    use rand::{Rng, SeedableRng};
 
     /// Test the efficient `quintic` function against the generic `pow`.
     #[test]
     fn quintic_vs_pow() {
-        let mut rng = rng();
+        let mut rng = SmallRng::seed_from_u64(0);
         for _ in 0..10_000 {
-            let x = Felt::from(rng.random::<u32>() % MODULUS);
+            let x = Felt::from(rng.r#gen::<u32>() % MODULUS);
             assert_eq!(quintic(x), pow(x, 5));
         }
     }
