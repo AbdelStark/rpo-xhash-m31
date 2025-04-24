@@ -649,8 +649,8 @@ mod tests {
     #[test]
     fn rpo_roundtrip_length_preservation() {
         let mut state = [Felt::from_u32_unchecked(0); STATE_WIDTH];
-        for i in 0..STATE_WIDTH {
-            state[i] = Felt::from(i as u32 + 3);
+        for (i, m) in state.iter_mut().enumerate().take(STATE_WIDTH) {
+            *m = Felt::from(i as u32 + 3);
         }
         let copy = state;
         RpoM31::apply(&mut state);
@@ -663,8 +663,8 @@ mod tests {
     #[test]
     fn xhash_roundtrip_length_preservation() {
         let mut state = [Felt::from_u32_unchecked(0); STATE_WIDTH];
-        for i in 0..STATE_WIDTH {
-            state[i] = Felt::from(i as u32 + 7);
+        for (i, m) in state.iter_mut().enumerate().take(STATE_WIDTH) {
+            *m = Felt::from(i as u32 + 7);
         }
         let copy = state;
         XHashM31::apply(&mut state);

@@ -41,17 +41,15 @@ fn mds_is_invertible() {
     // 24 is small → fine for a unit-test.
     const N: usize = 24;
     let mut mat = [[M31::from_u32_unchecked(0); N]; N];
-    for i in 0..N {
-        mat[i].copy_from_slice(&mds::M[i]);
+    for (i, row) in mat.iter_mut().enumerate().take(N) {
+        row.copy_from_slice(&mds::M[i]);
     }
 
     // augment with identity
     let mut aug = [[M31::from_u32_unchecked(0); N * 2]; N];
-    for i in 0..N {
-        for j in 0..N {
-            aug[i][j] = mat[i][j];
-        }
-        aug[i][N + i] = M31::from_u32_unchecked(1);
+    for (i, row) in aug.iter_mut().enumerate().take(N) {
+        row[..N].copy_from_slice(&mat[i]);
+        row[N + i] = M31::from_u32_unchecked(1);
     }
 
     // forward elimination
@@ -76,10 +74,10 @@ fn mds_is_invertible() {
     }
 
     // left block should now be identity
-    for i in 0..N {
-        for j in 0..N {
+    for (i, row) in aug.iter().enumerate().take(N) {
+        for (j, col) in row.iter().enumerate().take(N) {
             assert_eq!(
-                aug[i][j],
+                *col,
                 if i == j {
                     M31::from_u32_unchecked(1)
                 } else {
