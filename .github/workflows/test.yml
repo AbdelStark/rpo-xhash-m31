@@ -1,0 +1,39 @@
+name: Build & Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test on ${{ matrix.os }} / ${{ matrix.rust }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false # Don't cancel all jobs if one fails
+      matrix:
+        os: [ubuntu-latest] # Only run on ubuntu
+        rust: [nightly]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust (${{ matrix.rust }})
+        # Use the toolchain specified in rust-toolchain.toml
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: ${{ matrix.rust }}
+
+      - name: Set up Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --verbose
+
+      - name: Run tests
+        run: cargo test --verbose
