@@ -2,6 +2,16 @@
 name = "rpo-xhash-m31"
 version = "0.1.0"
 edition = "2024"
+authors = ["@AbdelStark"]
+license = "MIT"
+description = "Rust implementation of the RPO‑M31 and XHash‑M31 hash permutations, with a Sponge facade for Circle‑STARKs and zk‑friendly hashing."
+readme = "README.md"
+homepage = "https://github.com/AbdelStark/rpo-xhash-m31"
+repository = "https://github.com/AbdelStark/rpo-xhash-m31"
+documentation = "https://docs.rs/rpo-xhash-m31"
+keywords = ["cryptography", "hash", "stark", "bitcoin"]
+categories = ["cryptography", "no-std", "algorithms"]
+
 
 [dependencies]
 bytemuck = "1.14.3"
