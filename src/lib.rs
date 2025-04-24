@@ -209,12 +209,12 @@ pub mod mds {
         }
         // Build circulant matrix from the first row
         let mut m = [[Felt::from_u32_unchecked(0); STATE_WIDTH]; STATE_WIDTH];
-        for row in 0..STATE_WIDTH {
-            for col in 0..STATE_WIDTH {
+        for (row_idx, current_row) in m.iter_mut().enumerate().take(STATE_WIDTH) {
+            for (col_idx, current_col) in current_row.iter_mut().enumerate().take(STATE_WIDTH) {
                 // Calculate the index in the first row using the circulant property:
                 // M[row][col] = first_row[(col - row + N) % N]
-                let index = (col + N - row) % N;
-                m[row][col] = first[index];
+                let index = (col_idx + N - row_idx) % N; // Use row_idx here
+                *current_col = first[index];
             }
         }
         // Truncate the 32x32 circulant matrix to 24x24 (implicitly done by loop bounds)
@@ -231,6 +231,7 @@ pub mod mds {
 /// RPO-M31 consists of [`RPO_ROUNDS`] rounds, each comprising:
 /// 1. Forward Mix (FM): Apply MDS matrix, add round constants, apply quintic S-box.
 /// 2. Backward Mix (BM): Apply MDS matrix, add round constants, apply inverse quintic S-box.
+///
 /// Followed by a final Linear Layer (CLS): Apply MDS matrix, add final round constants.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct RpoM31;
@@ -364,6 +365,7 @@ impl Fp3 {
 /// 1. Forward Mix (FM): Apply MDS matrix, add round constants, apply quintic S-box (over M31).
 /// 2. Backward Mix (BM): Apply MDS matrix, add round constants, apply inverse quintic S-box (over M31).
 /// 3. Fp3 Mix (P3M): Add round constants, apply quintic S-box over Fp3 (treating state as 8 Fp3 elements).
+///
 /// Followed by a final Linear Layer (CLS): Apply MDS matrix, add final round constants.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct XHashM31;
