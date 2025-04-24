@@ -518,6 +518,7 @@ name = "rpo-xhash-m31"
 version = "0.1.0"
 dependencies = [
  "digest",
+ "num-traits",
  "once_cell",
  "rand 0.9.1",
  "sha3",

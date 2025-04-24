@@ -309,8 +309,8 @@ impl XHashM31 {
 /// Streaming hash instance choosing the permutation type at compile time.
 #[derive(Clone)]
 pub struct Sponge<P> {
-    state: [Felt; STATE_WIDTH],
-    pos: usize,
+    pub state: [Felt; STATE_WIDTH],
+    pub pos: usize,
     _marker: core::marker::PhantomData<P>,
 }
 
