@@ -27,7 +27,7 @@ generic security (Section 3 of the paper).
 ## 🎮 Quick‑start
 
 ```bash
-# add the dependency (until published use a git URL)
+# add the dependency
 cargo add rpo-xhash-m31
 
 # run the demo
