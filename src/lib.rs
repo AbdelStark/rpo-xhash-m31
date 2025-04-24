@@ -711,8 +711,6 @@ mod tests {
         assert_eq!(quintic_inv(Felt::from(1)), Felt::from(1));
     }
 
-    /// Test Fp3 multiplication properties (associativity, commutativity).
-
     /// Test sponge determinism for RPO.
     #[test]
     fn test_sponge_determinism_rpo() {
