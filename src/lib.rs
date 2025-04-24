@@ -11,7 +11,7 @@
 //! * **Permutation core** – self‑contained implementation of the round‑function
 //!   for the two ciphers (`RpoM31` & `XHashM31`).
 //! * **Sponge mode** – easy‑to‑use, `blake2`‑like streaming interface that turns
-//!   the permutation into a general‑purpose hash (rate = 16, capacity = 8).
+//!   the permutation into a general‑purpose hash (rate = 16, capacity = 8).
 
 //  ---------------------------------------------------------------------------
 //  Field aliases & helpers
@@ -56,6 +56,13 @@ fn pow(mut base: Felt, mut exp: u64) -> Felt {
     acc
 }
 
+/// Efficient x^(1/5) – multiplicative inverse of the quintic S-box.
+/// TODO: replace with 37-mul addition-chain from the paper for extra speed.
+#[inline(always)]
+fn quintic_inv(x: Felt) -> Felt {
+    pow(x, INV_QUINTIC_EXP)
+}
+
 //  ---------------------------------------------------------------------------
 //  Round‑constants — generated deterministically via SHAKE‑256
 //  ---------------------------------------------------------------------------
@@ -64,10 +71,10 @@ pub mod constants {
     use super::*;
     use once_cell::sync::Lazy;
 
-    /// *5 bytes* per constant – see §3 "Round constants" of the paper.
+    /// *5 bytes* per constant – see §3 "Round constants" of the paper.
     const BYTES_PER_CONSTANT: usize = 5;
 
-    /// Internal helper – derive `len` field elements from the paper’s procedure.
+    /// Internal helper – derive `len` field elements from the paper's procedure.
     fn derive_constants(tag: &str, len: usize) -> ArrayVec<[Felt; 512]> {
         let mut hasher = Shake256::default();
         hasher.update(tag.as_bytes());
@@ -85,7 +92,7 @@ pub mod constants {
         out
     }
 
-    /// `RPO‑M31` step constants:  ⎡FM₀, BM₀, … , FM₆, BM₆, CLS⎤
+    /// `RPO‑M31` step constants:  ⎡FM₀, BM₀, … , FM₆, BM₆, CLS⎤
     pub static RPO: Lazy<[[Felt; STATE_WIDTH]; RPO_ROUNDS * 2 + 1]> = Lazy::new(|| {
         let needed = (RPO_ROUNDS * 2 + 1) * STATE_WIDTH;
         let raw = derive_constants("RPO‑M31:p=2147483647,m=24,c=8,n=7", needed);
@@ -109,24 +116,24 @@ pub mod constants {
 }
 
 //  ---------------------------------------------------------------------------
-//  MDS matrix – generated once at run‑time from the circulant construction.
+//  MDS matrix – generated once at run‑time from the circulant construction.
 //  ---------------------------------------------------------------------------
 #[doc(hidden)]
 pub mod mds {
     use super::*;
     use once_cell::sync::Lazy;
 
-    /// return 24×24 MDS matrix produced from Haböck’s circulant construction (§A.3).
+    /// return 24×24 MDS matrix produced from Haböck's circulant construction (§A.3).
     pub static M: Lazy<[[Felt; STATE_WIDTH]; STATE_WIDTH]> = Lazy::new(generate_mds);
 
     /// Generate full 32×32 circulant and truncate to 24×24.
     fn generate_mds() -> [[Felt; STATE_WIDTH]; STATE_WIDTH] {
-        // 64‑th root of unity τ = 456695729 + i·1567857810  (paper A.3)
-        // λ = 1  ⇒ first row Eq.(14)
+        // 64th root of unity τ = 456695729 + i·1567857810  (paper A.3)
+        // λ = 1  ⇒ first row Eq.(14)
         // The procedure is deterministic and cheap – run at start‑up.
         const N: usize = 32;
         let mut first = [Felt::from_u32_unchecked(0); N];
-        // Precompute τ^k for k=0..N-1  over C(M31) ≅ Fp².  We piggy‑back on the
+        // Precompute τ^k for k=0..N-1  over C(M31) ≅ Fp².  We piggy‑back on the
         // quadratic extension already provided by `stwo` (module `cm31`).
         // For portability (and because the MDS is constant) we *reuse* the hard‑
         // coded first row given in the paper.
@@ -175,7 +182,7 @@ impl RpoM31 {
             // ── BM step ──────────────────────────────────────────────────────
             mul_matrix(state, &M);
             add_constants(state, &C[idx]);
-            map_elements(state, |x| pow(x, INV_QUINTIC_EXP));
+            map_elements(state, quintic_inv);
             idx += 1;
         }
         // Final linear layer
@@ -188,7 +195,7 @@ impl RpoM31 {
 //  Permutation – XHash‑M31
 //  ---------------------------------------------------------------------------
 
-/// Cubic extension element  a + b·X + c·X²  modulo  X³ + 2.
+/// Cubic extension element  a + b·X + c·X²  modulo  X³ + 2.
 #[derive(Clone, Copy, Default)]
 struct Fp3 {
     a: Felt,
@@ -277,7 +284,7 @@ impl XHashM31 {
             // BM -------------------------------------------------------------
             mul_matrix(state, &M);
             add_constants(state, &C[idx]);
-            map_elements(state, |x| pow(x, INV_QUINTIC_EXP));
+            map_elements(state, quintic_inv);
             idx += 1;
             // P3M ------------------------------------------------------------
             add_constants(state, &C[idx]);
@@ -348,7 +355,7 @@ impl<P: Permutation> Sponge<P> {
         }
     }
 
-    /// Squeeze a digest of **16 field elements** (64 bytes little‑endian).
+    /// Squeeze a digest of **16 field elements** (64 bytes little‑endian).
     pub fn squeeze(mut self) -> [Felt; RATE] {
         if self.pos != 0 {
             P::apply(&mut self.state);
@@ -392,17 +399,41 @@ fn map_elements<F: Fn(Felt) -> Felt>(state: &mut [Felt; STATE_WIDTH], f: F) {
     }
 }
 
-#[inline]
+#[inline(always)]
 fn mul_matrix(state: &mut [Felt; STATE_WIDTH], m: &[[Felt; STATE_WIDTH]; STATE_WIDTH]) {
-    let mut tmp = [Felt::from_u32_unchecked(0); STATE_WIDTH];
-    for i in 0..STATE_WIDTH {
-        let mut acc = Felt::from_u32_unchecked(0);
-        for (j, _) in state.iter().enumerate().take(STATE_WIDTH) {
-            acc += m[i][j] * state[j];
-        }
-        tmp[i] = acc;
+    macro_rules! dot24 {
+        ($row:expr, $s:expr) => {
+            $row[0] * $s[0]
+                + $row[1] * $s[1]
+                + $row[2] * $s[2]
+                + $row[3] * $s[3]
+                + $row[4] * $s[4]
+                + $row[5] * $s[5]
+                + $row[6] * $s[6]
+                + $row[7] * $s[7]
+                + $row[8] * $s[8]
+                + $row[9] * $s[9]
+                + $row[10] * $s[10]
+                + $row[11] * $s[11]
+                + $row[12] * $s[12]
+                + $row[13] * $s[13]
+                + $row[14] * $s[14]
+                + $row[15] * $s[15]
+                + $row[16] * $s[16]
+                + $row[17] * $s[17]
+                + $row[18] * $s[18]
+                + $row[19] * $s[19]
+                + $row[20] * $s[20]
+                + $row[21] * $s[21]
+                + $row[22] * $s[22]
+                + $row[23] * $s[23]
+        };
     }
-    *state = tmp;
+
+    let s = *state; // copy to avoid aliasing during computation
+    for i in 0..STATE_WIDTH {
+        state[i] = dot24!(m[i], s);
+    }
 }
 
 //  ---------------------------------------------------------------------------
