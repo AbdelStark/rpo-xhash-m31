@@ -245,8 +245,12 @@ impl core::ops::Mul for Fp3 {
 impl Fp3 {
     #[inline(always)]
     fn quintic(self) -> Self {
-        self.pow_u64(5)
+        // Efficient x⁵: x -> x² -> x⁴ -> x⁵ (2S + 1M)
+        let x2 = self * self; // x²
+        let x4 = x2 * x2; // x⁴
+        x4 * self // x⁵
     }
+
     #[inline(always)]
     fn pow_u64(mut self, mut e: u64) -> Self {
         let mut acc = Self {
