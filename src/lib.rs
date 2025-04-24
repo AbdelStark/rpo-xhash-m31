@@ -250,23 +250,6 @@ impl Fp3 {
         let x4 = x2 * x2; // x⁴
         x4 * self // x⁵
     }
-
-    #[inline(always)]
-    fn pow_u64(mut self, mut e: u64) -> Self {
-        let mut acc = Self {
-            a: Felt::from_u32_unchecked(1),
-            b: Felt::from_u32_unchecked(0),
-            c: Felt::from_u32_unchecked(0),
-        };
-        while e != 0 {
-            if e & 1 == 1 {
-                acc = acc * self;
-            }
-            self = self * self;
-            e >>= 1;
-        }
-        acc
-    }
 }
 
 /// Stateless XHash‑M31 permutation.
