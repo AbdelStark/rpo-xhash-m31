@@ -24,11 +24,11 @@ pub use stwo_prover::core::fields::{
 };
 use tinyvec::ArrayVec;
 
-const STATE_WIDTH: usize = 24;
-const RATE: usize = 16;
-const RPO_ROUNDS: usize = 7;
-const XHASH_ROUNDS: usize = 3; // 3 triplets FM|BM|P3M ⇒ 9 steps
-const INV_QUINTIC_EXP: u64 = 1_717_986_917; // 5⁻¹ mod (p‑1)
+pub const STATE_WIDTH: usize = 24;
+pub const RATE: usize = 16;
+pub const RPO_ROUNDS: usize = 7;
+pub const XHASH_ROUNDS: usize = 3; // 3 triplets FM|BM|P3M ⇒ 9 steps
+pub const INV_QUINTIC_EXP: u64 = 1_717_986_917; // 5⁻¹ mod (p‑1)
 
 //  ---------------------------------------------------------------------------
 //  Compile‑time utilities
