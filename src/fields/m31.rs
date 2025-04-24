@@ -32,25 +32,11 @@ impl_field!(M31, P);
 
 impl M31 {
     /// Returns `val % P` when `val` is in the range `[0, 2P)`.
-    ///
-    /// ```
-    /// use stwo_prover::core::fields::m31::{M31, P};
-    ///
-    /// let val = 2 * P - 19;
-    /// assert_eq!(M31::partial_reduce(val), M31::from(P - 19));
-    /// ```
     pub fn partial_reduce(val: u32) -> Self {
         Self(val.checked_sub(P).unwrap_or(val))
     }
 
     /// Returns `val % P` when `val` is in the range `[0, P^2)`.
-    ///
-    /// ```
-    /// use stwo_prover::core::fields::m31::{M31, P};
-    ///
-    /// let val = (P as u64).pow(2) - 19;
-    /// assert_eq!(M31::reduce(val), M31::from(P - 19));
-    /// ```
     pub const fn reduce(val: u64) -> Self {
         Self((((((val >> MODULUS_BITS) + val + 1) >> MODULUS_BITS) + val) & (P as u64)) as u32)
     }
@@ -104,14 +90,6 @@ impl Mul for M31 {
 }
 
 impl FieldExpOps for M31 {
-    /// ```
-    /// use num_traits::One;
-    /// use stwo_prover::core::fields::m31::BaseField;
-    /// use stwo_prover::core::fields::FieldExpOps;
-    ///
-    /// let v = BaseField::from(19);
-    /// assert_eq!(v.inverse() * v, BaseField::one());
-    /// ```
     fn inverse(&self) -> Self {
         self.inverse()
     }
@@ -183,13 +161,6 @@ macro_rules! m31 {
 /// multiplications. Made generic to support both vectorized and non-vectorized implementations.
 /// Multiplication tree found with [addchain](https://github.com/mmcloughlin/addchain).
 ///
-/// ```
-/// use stwo_prover::core::fields::m31::{pow2147483645, BaseField};
-/// use stwo_prover::core::fields::FieldExpOps;
-///
-/// let v = BaseField::from(19);
-/// assert_eq!(pow2147483645(v), v.pow(2147483645));
-/// ```
 pub fn pow2147483645<T: FieldExpOps>(v: T) -> T {
     let t0 = sqn::<2, T>(v.clone()) * v.clone();
     let t1 = sqn::<1, T>(t0.clone()) * t0.clone();

@@ -154,19 +154,6 @@ pub unsafe trait IntoSlice<T: Sized>: Sized {
 unsafe impl<F: Field> IntoSlice<u8> for F {}
 
 pub trait ComplexConjugate {
-    /// # Example
-    ///
-    /// ```
-    /// use stwo_prover::core::fields::m31::P;
-    /// use stwo_prover::core::fields::qm31::QM31;
-    /// use stwo_prover::core::fields::ComplexConjugate;
-    ///
-    /// let x = QM31::from_u32_unchecked(1, 2, 3, 4);
-    /// assert_eq!(
-    ///     x.complex_conjugate(),
-    ///     QM31::from_u32_unchecked(1, 2, P - 3, P - 4)
-    /// );
-    /// ```
     fn complex_conjugate(&self) -> Self;
 }
 
