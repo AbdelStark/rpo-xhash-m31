@@ -904,66 +904,74 @@ mod tests {
     /// Test the CountingOpsTracker for RPO.
     #[test]
     fn test_rpo_op_counting() {
-        let tracker = CountingOpsTracker::new();
-        let mut sponge: Sponge<RpoM31, _> = Sponge::new_with_tracker(tracker);
+        // Test counts for exactly one permutation call
+        let mut state = [Felt::from_u32_unchecked(0); STATE_WIDTH];
+        let mut tracker = CountingOpsTracker::new();
 
-        // Absorb just enough to trigger one permutation (RATE = 16)
-        for i in 0..RATE {
-            sponge.absorb(felt(i as u32));
-        }
-        // Absorb one more to ensure the permutation was called and finalize
-        sponge.absorb(felt(RATE as u32));
+        // Apply the permutation once
+        RpoM31::apply(&mut state, &mut tracker);
 
-        let (_digest, final_tracker) = sponge.squeeze_and_report();
-        let report = final_tracker.report_json().unwrap();
-        println!(
-            "RPO Ops Report (1 permutation + absorb/squeeze overhead):\n{}",
-            report
+        let report = tracker.report_json().unwrap();
+        println!("RPO Ops Report (1 Permutation Call):\n{}", report);
+
+        // Basic sanity checks for one permutation
+        assert_eq!(*tracker.counts.get(&Op::Permutation).unwrap_or(&0), 1);
+        assert!(*tracker.counts.get(&Op::FeltAdd).unwrap_or(&0) > 0);
+        assert!(*tracker.counts.get(&Op::FeltMul).unwrap_or(&0) > 0);
+        assert_eq!(
+            *tracker.counts.get(&Op::MdsMul).unwrap_or(&0),
+            (RPO_ROUNDS * 2 + 1) as u64
         );
-
-        // Basic sanity checks (exact counts depend on implementation details)
-        assert!(*final_tracker.counts.get(&Op::Permutation).unwrap_or(&0) >= 1);
-        assert!(*final_tracker.counts.get(&Op::FeltAdd).unwrap_or(&0) > 0);
-        assert!(*final_tracker.counts.get(&Op::FeltMul).unwrap_or(&0) > 0);
-        assert!(*final_tracker.counts.get(&Op::MdsMul).unwrap_or(&0) > 0);
-        // Reinstate specific op checks
-        assert!(*final_tracker.counts.get(&Op::FeltQuintic).unwrap_or(&0) > 0);
-        assert!(*final_tracker.counts.get(&Op::FeltQuinticInv).unwrap_or(&0) > 0);
+        assert_eq!(
+            *tracker.counts.get(&Op::FeltQuintic).unwrap_or(&0),
+            (RPO_ROUNDS * STATE_WIDTH) as u64
+        );
+        assert_eq!(
+            *tracker.counts.get(&Op::FeltQuinticInv).unwrap_or(&0),
+            (RPO_ROUNDS * STATE_WIDTH) as u64
+        );
         // Should not have Fp3 ops for RPO
-        assert!(final_tracker.counts.get(&Op::Fp3Mul).is_none());
-        assert!(final_tracker.counts.get(&Op::Fp3Quintic).is_none());
+        assert!(tracker.counts.get(&Op::Fp3Mul).is_none());
+        assert!(tracker.counts.get(&Op::Fp3Quintic).is_none());
     }
 
     /// Test the CountingOpsTracker for XHash.
     #[test]
     fn test_xhash_op_counting() {
-        let tracker = CountingOpsTracker::new();
-        let mut sponge: Sponge<XHashM31, _> = Sponge::new_with_tracker(tracker);
+        // Test counts for exactly one permutation call
+        let mut state = [Felt::from_u32_unchecked(0); STATE_WIDTH];
+        let mut tracker = CountingOpsTracker::new();
 
-        // Absorb just enough to trigger one permutation (RATE = 16)
-        for i in 0..RATE {
-            sponge.absorb(felt(i as u32));
-        }
-        // Absorb one more to ensure the permutation was called and finalize
-        sponge.absorb(felt(RATE as u32));
+        // Apply the permutation once
+        XHashM31::apply(&mut state, &mut tracker);
 
-        let (_digest, final_tracker) = sponge.squeeze_and_report();
-        let report = final_tracker.report_json().unwrap();
-        println!(
-            "XHash Ops Report (1 permutation + absorb/squeeze overhead):\n{}",
-            report
+        let report = tracker.report_json().unwrap();
+        println!("XHash Ops Report (1 Permutation Call):\n{}", report);
+
+        // Basic sanity checks for one permutation
+        assert_eq!(*tracker.counts.get(&Op::Permutation).unwrap_or(&0), 1);
+        assert!(*tracker.counts.get(&Op::FeltAdd).unwrap_or(&0) > 0);
+        assert!(*tracker.counts.get(&Op::FeltMul).unwrap_or(&0) > 0);
+        assert_eq!(
+            *tracker.counts.get(&Op::MdsMul).unwrap_or(&0),
+            (XHASH_ROUNDS * 2 + 1) as u64
         );
-
-        // Basic sanity checks
-        assert!(*final_tracker.counts.get(&Op::Permutation).unwrap_or(&0) >= 1);
-        assert!(*final_tracker.counts.get(&Op::FeltAdd).unwrap_or(&0) > 0);
-        assert!(*final_tracker.counts.get(&Op::FeltMul).unwrap_or(&0) > 0);
-        assert!(*final_tracker.counts.get(&Op::MdsMul).unwrap_or(&0) > 0);
-        // Reinstate specific op checks
-        assert!(*final_tracker.counts.get(&Op::FeltQuintic).unwrap_or(&0) > 0);
-        assert!(*final_tracker.counts.get(&Op::FeltQuinticInv).unwrap_or(&0) > 0);
+        assert_eq!(
+            *tracker.counts.get(&Op::FeltQuintic).unwrap_or(&0),
+            (XHASH_ROUNDS * STATE_WIDTH) as u64
+        );
+        assert_eq!(
+            *tracker.counts.get(&Op::FeltQuinticInv).unwrap_or(&0),
+            (XHASH_ROUNDS * STATE_WIDTH) as u64
+        );
         // Should have Fp3 ops for XHash
-        assert!(*final_tracker.counts.get(&Op::Fp3Mul).unwrap_or(&0) > 0);
-        assert!(*final_tracker.counts.get(&Op::Fp3Quintic).unwrap_or(&0) > 0);
+        assert_eq!(
+            *tracker.counts.get(&Op::Fp3Mul).unwrap_or(&0),
+            (XHASH_ROUNDS * 8 * 3) as u64
+        ); // 8 triplets, 3 muls per quintic
+        assert_eq!(
+            *tracker.counts.get(&Op::Fp3Quintic).unwrap_or(&0),
+            (XHASH_ROUNDS * 8) as u64
+        ); // 8 triplets
     }
 }
