@@ -293,6 +293,11 @@ impl CountingOpsTracker {
             counts: HashMap::new(),
         }
     }
+
+    /// Returns a reference to the internal counts map.
+    pub fn get_counts(&self) -> &HashMap<Op, u64> {
+        &self.counts
+    }
 }
 
 impl OpsTracker for CountingOpsTracker {
