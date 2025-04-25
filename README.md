@@ -81,7 +81,7 @@ To evaluate the feasibility of implementing these hash functions directly in Bit
 ### Methodology
 
 1. **Operation Counting:** The core permutation logic (`RpoM31::apply` and `XHashM31::apply`) was instrumented using an `OpsTracker` to count the exact number of low-level field operations executed during a single permutation.
-2. **vByte Cost Assignment:** Each tracked operation was assigned an estimated vByte cost. These estimates are based on the assumption of using lookup tables for M31 field arithmetic within Bitcoin Script, as suggested by Bitcoin cryptography researchers. Key estimates include:
+2. **vByte Cost Assignment:** Each tracked operation was assigned an estimated vByte cost. These estimates are based on the assumption of using lookup tables for M31 field arithmetic within Bitcoin Script. Key estimates include:
     - `FeltAdd`: 10 vbytes
     - `FeltMul`: 400 vbytes
     - `FeltSquare`: 300 vbytes (Optimized multiplication)
