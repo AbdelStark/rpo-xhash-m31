@@ -31,3 +31,7 @@ criterion = { version = "0.5", features = ["html_reports"] }
 [[bench]]
 name = "hashing"
 harness = false
+
+[[bin]]
+name = "cost_estimator"
+path = "src/bin/cost_estimator.rs"
