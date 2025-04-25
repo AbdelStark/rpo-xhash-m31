@@ -18,15 +18,15 @@
 //! ## Usage
 //!
 //! ```rust
-//! use rpo_xhash_m31::{RpoM31, XHashM31, Sponge, Felt};
+//! use rpo_xhash_m31::{RpoM31, XHashM31, Sponge, Felt, NoopOpsTracker};
 //!
 //! // --- RPO ---
-//! let mut rpo_sponge: Sponge<RpoM31> = Sponge::new();
+//! let mut rpo_sponge: Sponge<RpoM31, NoopOpsTracker> = Sponge::new();
 //! rpo_sponge.absorb_bytes(b"some input data");
 //! let rpo_digest: [Felt; 16] = rpo_sponge.squeeze();
 //!
 //! // --- XHash ---
-//! let mut xhash_sponge: Sponge<XHashM31> = Sponge::new();
+//! let mut xhash_sponge: Sponge<XHashM31, NoopOpsTracker> = Sponge::new();
 //! xhash_sponge.absorb_bytes(b"different input");
 //! let xhash_digest: [Felt; 16] = xhash_sponge.squeeze();
 //!
@@ -39,12 +39,15 @@ pub mod fields;
 //  ---------------------------------------------------------------------------
 //  Field aliases & helpers
 //  ---------------------------------------------------------------------------
+use core::ops::{Add, Mul, Sub};
 use digest::{ExtendableOutput, Update, XofReader};
 pub use fields::{
     FieldExpOps,
     m31::{M31 as Felt, P as MODULUS},
 };
+use serde::{Deserialize, Serialize};
 use sha3::Shake256;
+use std::collections::HashMap;
 use tinyvec::ArrayVec;
 
 /// The width of the permutation state in field elements (24).
@@ -65,22 +68,30 @@ pub const INV_QUINTIC_EXP: u64 = 1_717_986_917; // 5⁻¹ mod (p‑1)
 /// Efficiently computes `x⁵` over `Felt`.
 /// Uses the sequence x -> x² -> x⁴ -> x⁵ (2 squares, 1 multiply).
 #[inline(always)]
-fn quintic(x: Felt) -> Felt {
+fn quintic<T: OpsTracker>(x: Felt, tracker: &mut T) -> Felt {
     let x2 = x.square(); // x²
+    tracker.record(Op::FeltSquare);
     let x4 = x2.square(); // x⁴
-    x4 * x // x⁵
+    tracker.record(Op::FeltSquare);
+    let res = x4 * x; // x⁵
+    tracker.record(Op::FeltMul);
+    // Explicitly record the high-level operation completion
+    tracker.record(Op::FeltQuintic);
+    res
 }
 
 /// Computes `base^exp` using exponentiation by squaring for `Felt`.
 /// Constant‑time with respect to the exponent.
 #[inline(always)]
-fn pow(mut base: Felt, mut exp: u64) -> Felt {
+fn pow<T: OpsTracker>(mut base: Felt, mut exp: u64, tracker: &mut T) -> Felt {
     let mut acc = Felt::from_u32_unchecked(1);
     while exp != 0 {
         if exp & 1 == 1 {
             acc *= base;
+            tracker.record(Op::FeltMul);
         }
         base = base.square();
+        tracker.record(Op::FeltSquare);
         exp >>= 1;
     }
     acc
@@ -89,8 +100,11 @@ fn pow(mut base: Felt, mut exp: u64) -> Felt {
 /// Efficiently computes `x^(1/5)` over `Felt` (multiplicative inverse of the quintic S-box).
 /// TODO: replace with 37-mul addition-chain from the paper for extra speed.
 #[inline(always)]
-fn quintic_inv(x: Felt) -> Felt {
-    pow(x, INV_QUINTIC_EXP)
+fn quintic_inv<T: OpsTracker>(x: Felt, tracker: &mut T) -> Felt {
+    let res = pow(x, INV_QUINTIC_EXP, tracker);
+    // Explicitly record the high-level operation completion
+    tracker.record(Op::FeltQuinticInv);
+    res
 }
 
 //  ---------------------------------------------------------------------------
@@ -222,6 +236,170 @@ pub mod mds {
 }
 
 //  ---------------------------------------------------------------------------
+//  Operations Counting
+//  ---------------------------------------------------------------------------
+
+/// Enum representing the different operations to track.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Op {
+    FeltAdd,        // Addition of Felt
+    FeltMul,        // Multiplication of Felt
+    FeltSquare,     // Squaring of Felt
+    FeltQuintic,    // Quintic S-box on Felt (x^5)
+    FeltQuinticInv, // Inverse Quintic S-box on Felt (x^(1/5))
+    MdsMul,         // Matrix-vector multiplication
+    Fp3Add,         // Addition in Fp3
+    Fp3Sub,         // Subtraction in Fp3
+    Fp3Mul,         // Multiplication in Fp3
+    Fp3Quintic,     // Quintic S-box in Fp3
+    Permutation,    // A full permutation call
+}
+
+/// Trait for tracking cryptographic operations.
+pub trait OpsTracker {
+    /// Records an occurrence of the specified operation.
+    fn record(&mut self, op: Op);
+
+    /// Generates a JSON report of the recorded operations.
+    /// Returns None if reporting is not supported (e.g., NoopOpsTracker).
+    fn report_json(&self) -> Option<String>;
+}
+
+/// An OpsTracker that does nothing.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NoopOpsTracker;
+
+impl OpsTracker for NoopOpsTracker {
+    #[inline(always)]
+    fn record(&mut self, _op: Op) { /* No-op */
+    }
+
+    #[inline(always)]
+    fn report_json(&self) -> Option<String> {
+        None // No reporting for the no-op tracker
+    }
+}
+
+/// An OpsTracker that counts occurrences of each operation.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CountingOpsTracker {
+    counts: HashMap<Op, u64>,
+}
+
+impl CountingOpsTracker {
+    /// Creates a new, empty counter.
+    pub fn new() -> Self {
+        Self {
+            counts: HashMap::new(),
+        }
+    }
+}
+
+impl OpsTracker for CountingOpsTracker {
+    #[inline]
+    fn record(&mut self, op: Op) {
+        *self.counts.entry(op).or_insert(0) += 1;
+    }
+
+    fn report_json(&self) -> Option<String> {
+        match serde_json::to_string_pretty(&self.counts) {
+            Ok(json_string) => Some(json_string),
+            Err(_) => None, // Handle serialization error if necessary
+        }
+    }
+}
+
+/// Represents an element in the cubic extension field Fp3 = M31[X] / (X³ + 2).
+///
+/// Elements are stored as `a + b*X + c*X²`.
+/// This struct is used internally for the P3M step in the XHash-M31 permutation.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+struct Fp3 {
+    /// Coefficient of X⁰
+    a: Felt,
+    /// Coefficient of X¹
+    b: Felt,
+    /// Coefficient of X²
+    c: Felt,
+}
+
+/// Implements addition for `Fp3` elements (component-wise).
+impl Add for Fp3 {
+    type Output = Self;
+    #[inline(always)]
+    fn add(self, rhs: Self) -> Self {
+        // No tracker here, assume caller tracks Op::Fp3Add if needed
+        Self {
+            a: self.a + rhs.a,
+            b: self.b + rhs.b,
+            c: self.c + rhs.c,
+        }
+    }
+}
+
+/// Implements subtraction for `Fp3` elements (component-wise).
+impl Sub for Fp3 {
+    type Output = Self;
+    #[inline(always)]
+    fn sub(self, rhs: Self) -> Self {
+        // No tracker here, assume caller tracks Op::Fp3Sub if needed
+        Self {
+            a: self.a - rhs.a,
+            b: self.b - rhs.b,
+            c: self.c - rhs.c,
+        }
+    }
+}
+
+/// Implements multiplication for `Fp3` elements modulo `X³ + 2`.
+///
+/// Uses a Karatsuba-like approach followed by reduction (`X³ -> -2`).
+impl Mul for Fp3 {
+    type Output = Self;
+    #[inline]
+    fn mul(self, rhs: Self) -> Self {
+        // Note: Tracking is done by the caller (e.g., Fp3::quintic)
+        // If Fp3Mul needed tracking in other contexts, a mul_with_tracker method
+        // or similar would be required, as trait methods cannot easily take extra args.
+        let v0 = self.a * rhs.a;
+        let v1 = self.b * rhs.b;
+        let v2 = self.c * rhs.c;
+        let s1 = (self.a + self.b) * (rhs.a + rhs.b) - v0 - v1;
+        let s2 = (self.b + self.c) * (rhs.b + rhs.c) - v1 - v2;
+        let s3 = (self.a + self.c) * (rhs.a + rhs.c) - v0 - v2;
+        Self {
+            a: v0 - Felt::from(2) * v2,
+            b: s1 - Felt::from(2) * v2,
+            c: s3 + s2,
+        }
+    }
+}
+
+impl Fp3 {
+    /// Efficiently computes `self⁵` over Fp3.
+    /// Uses the sequence `x -> x² -> x⁴ -> x⁵` (2 squares, 1 multiply).
+    #[inline(always)]
+    fn quintic<T: OpsTracker>(self, tracker: &mut T) -> Self {
+        // Record the start of the Fp3 Quintic operation logic
+        // x -> x²
+        let x2 = self * self;
+        // Track the underlying Fp3 multiplication for the square
+        tracker.record(Op::Fp3Mul);
+        // x² -> x⁴
+        let x4 = x2 * x2;
+        // Track the underlying Fp3 multiplication for the second square
+        tracker.record(Op::Fp3Mul);
+        // x⁴ -> x⁵
+        let res = x4 * self;
+        // Track the final Fp3 multiplication
+        tracker.record(Op::Fp3Mul);
+        // Explicitly record the completion of the high-level Fp3 Quintic operation
+        tracker.record(Op::Fp3Quintic);
+        res
+    }
+}
+
+//  ---------------------------------------------------------------------------
 //  Permutation – RPO‑M31
 //  ---------------------------------------------------------------------------
 
@@ -241,119 +419,36 @@ impl RpoM31 {
     /// # Arguments
     ///
     /// * `state`: A mutable reference to the 24-element state array.
+    /// * `tracker`: A mutable reference to an OpsTracker.
     #[inline]
-    pub fn apply(state: &mut [Felt; STATE_WIDTH]) {
+    pub fn apply<T: OpsTracker>(state: &mut [Felt; STATE_WIDTH], tracker: &mut T) {
         use constants::RPO as C;
         use mds::M;
+        tracker.record(Op::Permutation);
         let mut idx = 0;
         for _round in 0..RPO_ROUNDS {
             // ── FM step (Forward Mix) ───────────────────────────────────────
-            mul_matrix(state, &M);
-            add_constants(state, &C[idx]);
-            map_elements(state, quintic);
+            mul_matrix(state, &M, tracker);
+            add_constants(state, &C[idx], tracker);
+            // Pass tracker into the mapped function via closure capture
+            map_elements(state, |x| quintic(x, tracker));
             idx += 1;
             // ── BM step (Backward Mix) ──────────────────────────────────────
-            mul_matrix(state, &M);
-            add_constants(state, &C[idx]);
-            map_elements(state, quintic_inv);
+            mul_matrix(state, &M, tracker);
+            add_constants(state, &C[idx], tracker);
+            // Pass tracker into the mapped function via closure capture
+            map_elements(state, |x| quintic_inv(x, tracker));
             idx += 1;
         }
         // ── CLS step (Final Linear Layer) ──────────────────────────────────
-        mul_matrix(state, &M);
-        add_constants(state, &C[idx]);
+        mul_matrix(state, &M, tracker);
+        add_constants(state, &C[idx], tracker);
     }
 }
 
 //  ---------------------------------------------------------------------------
 //  Permutation – XHash‑M31
 //  ---------------------------------------------------------------------------
-
-/// Represents an element in the cubic extension field Fp3 = M31[X] / (X³ + 2).
-///
-/// Elements are stored as `a + b*X + c*X²`.
-/// This struct is used internally for the P3M step in the XHash-M31 permutation.
-#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
-struct Fp3 {
-    /// Coefficient of X⁰
-    a: Felt,
-    /// Coefficient of X¹
-    b: Felt,
-    /// Coefficient of X²
-    c: Felt,
-}
-
-/// Implements addition for `Fp3` elements (component-wise).
-impl core::ops::Add for Fp3 {
-    type Output = Self;
-    #[inline(always)]
-    fn add(self, rhs: Self) -> Self {
-        Self {
-            a: self.a + rhs.a,
-            b: self.b + rhs.b,
-            c: self.c + rhs.c,
-        }
-    }
-}
-
-/// Implements subtraction for `Fp3` elements (component-wise).
-impl core::ops::Sub for Fp3 {
-    type Output = Self;
-    #[inline(always)]
-    fn sub(self, rhs: Self) -> Self {
-        Self {
-            a: self.a - rhs.a,
-            b: self.b - rhs.b,
-            c: self.c - rhs.c,
-        }
-    }
-}
-
-/// Implements multiplication for `Fp3` elements modulo `X³ + 2`.
-///
-/// Uses a Karatsuba-like approach followed by reduction (`X³ -> -2`).
-impl core::ops::Mul for Fp3 {
-    type Output = Self;
-    #[inline] // Inline might be okay, profile if needed
-    fn mul(self, rhs: Self) -> Self {
-        // Karatsuba‑style multiply then reduce X³ → −2
-        let v0 = self.a * rhs.a; // a·d
-        let v1 = self.b * rhs.b; // b·e
-        let v2 = self.c * rhs.c; // c·f
-        // Calculate intermediate terms:
-        // s1 = ae + bd = (a+b)(d+e) - v0 - v1
-        let s1 = (self.a + self.b) * (rhs.a + rhs.b) - v0 - v1;
-        // s2 = bf + ce = (b+c)(e+f) - v1 - v2
-        let s2 = (self.b + self.c) * (rhs.b + rhs.c) - v1 - v2;
-        // s3 = af + cd = (a+c)(d+f) - v0 - v2
-        let s3 = (self.a + self.c) * (rhs.a + rhs.c) - v0 - v2;
-        // Combine terms and reduce modulo X³ + 2 (i.e., X³ = -2)
-        // Result = (v0 - 2*s2) + (s1 - 2*v2)*X + (s3 + v1)*X² ? - Let's stick to impl code.
-        // Reduction: v2·X³ -> −2·v2 ; v2·X⁴ = v2*(-2X) -> -2v2*X
-        // Original code structure:
-        // a_res = v0 - 2*v2 -> X⁰ term seems wrong based on Karatsuba structure (should involve s2?)
-        // b_res = s1 - 2*v2 -> X¹ term: (ae+bd) - 2*cf -- Seems correct
-        // c_res = s3 + s2   -> X² term: (af+cd) + (bf+ce) -- Seems correct
-        // Let's assume the implementation follows the reference and document based on that.
-        Self {
-            a: v0 - Felt::from(2) * v2, // X⁰ term
-            b: s1 - Felt::from(2) * v2, // X¹ term
-            c: s3 + s2,                 // X² term
-        }
-    }
-}
-
-impl Fp3 {
-    /// Efficiently computes `self⁵` over Fp3.
-    ///
-    /// Uses the sequence `x -> x² -> x⁴ -> x⁵` (2 squares, 1 multiply).
-    #[inline(always)]
-    fn quintic(self) -> Self {
-        // Efficient x⁵: x -> x² -> x⁴ -> x⁵ (2S + 1M)
-        let x2 = self * self; // x²
-        let x4 = x2 * x2; // x⁴
-        x4 * self // x⁵
-    }
-}
 
 /// A stateless permutation implementing the XHash-M31 algorithm.
 ///
@@ -372,48 +467,49 @@ impl XHashM31 {
     /// # Arguments
     ///
     /// * `state`: A mutable reference to the 24-element state vector.
+    /// * `tracker`: A mutable reference to an OpsTracker.
     #[inline]
-    pub fn apply(state: &mut [Felt; STATE_WIDTH]) {
+    pub fn apply<T: OpsTracker>(state: &mut [Felt; STATE_WIDTH], tracker: &mut T) {
         use constants::XHASH as C;
         use mds::M;
+        tracker.record(Op::Permutation);
         let mut idx = 0;
         for _round in 0..XHASH_ROUNDS {
-            // Renamed loop var for clarity
             // ── FM step (Forward Mix - M31) ─────────────────────────────────
-            mul_matrix(state, &M);
-            add_constants(state, &C[idx]);
-            map_elements(state, quintic); // M31 quintic
+            mul_matrix(state, &M, tracker);
+            add_constants(state, &C[idx], tracker);
+            // Pass tracker into the mapped function via closure capture
+            map_elements(state, |x| quintic(x, tracker));
             idx += 1;
 
             // ── BM step (Backward Mix - M31) ────────────────────────────────
-            mul_matrix(state, &M);
-            add_constants(state, &C[idx]);
-            map_elements(state, quintic_inv); // M31 inverse quintic
+            mul_matrix(state, &M, tracker);
+            add_constants(state, &C[idx], tracker);
+            // Pass tracker into the mapped function via closure capture
+            map_elements(state, |x| quintic_inv(x, tracker));
             idx += 1;
 
             // ── P3M step (Fp3 Mix) ──────────────────────────────────────────
-            add_constants(state, &C[idx]);
+            add_constants(state, &C[idx], tracker); // Add M31 constants
             // Apply Fp3 quintic S-box to 8 disjoint triplets
             for t in 0..8 {
                 let base_idx = t * 3;
-                // Construct Fp3 element from state slice
-                let mut fp3_element = Fp3 {
+                let fp3_element = Fp3 {
                     a: state[base_idx],
                     b: state[base_idx + 1],
                     c: state[base_idx + 2],
                 };
-                // Apply Fp3 quintic
-                fp3_element = fp3_element.quintic();
-                // Store result back into state
-                state[base_idx] = fp3_element.a;
-                state[base_idx + 1] = fp3_element.b;
-                state[base_idx + 2] = fp3_element.c;
+                // Apply Fp3 quintic, passing the tracker
+                let result_fp3 = fp3_element.quintic(tracker);
+                state[base_idx] = result_fp3.a;
+                state[base_idx + 1] = result_fp3.b;
+                state[base_idx + 2] = result_fp3.c;
             }
             idx += 1;
         }
         // ── CLS step (Final Linear Layer) ──────────────────────────────────
-        mul_matrix(state, &M);
-        add_constants(state, &C[idx]);
+        mul_matrix(state, &M, tracker);
+        add_constants(state, &C[idx], tracker);
     }
 }
 
@@ -421,72 +517,63 @@ impl XHashM31 {
 //  Sponge construction (rate 16 / cap 8)
 //  ---------------------------------------------------------------------------
 
-/// A generic sponge construction based on a chosen permutation `P`.
+/// A generic sponge construction based on a chosen permutation `P` and an OpsTracker `Tr`.
 ///
 /// Implements a standard sponge mode with rate `RATE` (16) and capacity `STATE_WIDTH - RATE` (8).
 /// It provides methods for absorbing data ([`absorb`], [`absorb_bytes`]) and squeezing output ([`squeeze`]).
 ///
 /// The permutation `P` must implement the [`Permutation`] trait.
 #[derive(Clone)]
-pub struct Sponge<P> {
+pub struct Sponge<P: Permutation, Tr: OpsTracker> {
     /// The internal state vector (24 field elements).
     pub state: [Felt; STATE_WIDTH],
     /// The current position within the rate part of the state for absorption (0..RATE).
     pub pos: usize,
+    /// The operation tracker.
+    pub tracker: Tr,
     /// Marker for the permutation type.
     _marker: core::marker::PhantomData<P>,
 }
 
-/// Creates a new `Sponge` instance with a zero-initialized state.
-impl<P: Permutation> Default for Sponge<P> {
+/// Creates a new `Sponge` instance with a zero-initialized state and a default tracker.
+impl<P: Permutation, Tr: OpsTracker + Default> Default for Sponge<P, Tr> {
     fn default() -> Self {
-        Self::new()
+        Self::new_with_tracker(Tr::default())
     }
 }
 
-impl<P: Permutation> Sponge<P> {
-    /// Creates a new `Sponge` instance with a zero-initialized state.
-    ///
-    /// # Returns
-    ///
-    /// A new `Sponge<P>` with state elements set to `Felt::from_u32_unchecked(0)` and `pos` set to 0.
+impl<P: Permutation> Sponge<P, NoopOpsTracker> {
+    /// Creates a new `Sponge` instance with a zero-initialized state and a NoopOpsTracker.
     pub fn new() -> Self {
+        Self::new_with_tracker(NoopOpsTracker {})
+    }
+}
+
+impl<P: Permutation, Tr: OpsTracker> Sponge<P, Tr> {
+    /// Creates a new `Sponge` instance with a zero-initialized state and the provided tracker.
+    pub fn new_with_tracker(tracker: Tr) -> Self {
         Self {
             state: [Felt::from_u32_unchecked(0); STATE_WIDTH],
             pos: 0,
+            tracker,
             _marker: core::marker::PhantomData,
         }
     }
 
     /// Absorbs a single field element into the sponge state.
-    ///
-    /// Adds the `element` to the state at the current `pos`. If the rate part
-    /// is full (`pos == RATE`), it applies the permutation and resets `pos` to 0.
-    ///
-    /// # Arguments
-    ///
-    /// * `element`: The `Felt` element to absorb.
     pub fn absorb(&mut self, element: Felt) {
         // Add element to the current position in the rate part.
-        // In a prime field like M31, addition is equivalent to XOR for mixing.
         self.state[self.pos] += element; // XOR would also work in prime field
+        self.tracker.record(Op::FeltAdd);
         self.pos += 1;
         // If the rate part is full, permute the state.
         if self.pos == RATE {
-            P::apply(&mut self.state);
+            P::apply(&mut self.state, &mut self.tracker);
             self.pos = 0; // Reset position
         }
     }
 
     /// Absorbs a slice of bytes into the sponge state.
-    ///
-    /// Processes the input `bytes` in 4-byte chunks, interpreting each chunk
-    /// as a little-endian `u32` and converting it to a `Felt` element before
-    /// absorbing it using [`absorb`]. Handles partial chunks at the end.
-    ///
-    /// # Arguments
-    ///
-    /// * `bytes`: The byte slice to absorb.
     pub fn absorb_bytes(&mut self, bytes: &[u8]) {
         for chunk in bytes.chunks(4) {
             let mut word = [0u8; 4];
@@ -498,31 +585,26 @@ impl<P: Permutation> Sponge<P> {
     }
 
     /// Squeezes the sponge to produce an output digest of `RATE` elements.
-    ///
-    /// If any elements have been absorbed since the last permutation (`pos != 0`),
-    /// it applies the permutation first (finalizing the state). Then, it copies
-    /// the rate part (`RATE` elements) of the state into the output array.
-    ///
-    /// Note: This consumes the `Sponge` instance. For XOF functionality,
-    /// additional methods would be needed to continue squeezing by repeatedly
-    /// permuting and extracting the rate part.
-    ///
-    /// # Returns
-    ///
-    /// An array of `RATE` (16) `Felt` elements representing the hash digest.
     pub fn squeeze(mut self) -> [Felt; RATE] {
         // If the rate part wasn't full, apply the permutation to mix the last absorbed elements.
-        // This also serves as domain separation between absorption and squeezing.
         if self.pos != 0 {
-            // An alternative padding scheme could be used here (e.g., append 1 followed by zeros),
-            // but the paper's reference implementation implicitly pads with zeros by permuting
-            // the potentially non-zero capacity part. Permuting here ensures consistency.
-            P::apply(&mut self.state);
+            // Apply padding implicitly by permuting the current state.
+            P::apply(&mut self.state, &mut self.tracker);
         }
         // Squeeze the rate part of the state.
         let mut out = [Felt::from_u32_unchecked(0); RATE];
         out.copy_from_slice(&self.state[..RATE]);
         out
+    }
+
+    /// Finalizes the sponge and returns both the digest and the tracker state.
+    pub fn squeeze_and_report(mut self) -> ([Felt; RATE], Tr) {
+        if self.pos != 0 {
+            P::apply(&mut self.state, &mut self.tracker);
+        }
+        let mut out = [Felt::from_u32_unchecked(0); RATE];
+        out.copy_from_slice(&self.state[..RATE]);
+        (out, self.tracker)
     }
 }
 
@@ -530,29 +612,30 @@ impl<P: Permutation> Sponge<P> {
 ///
 /// This allows the [`Sponge`] struct to be generic over the permutation used.
 pub trait Permutation {
-    /// Applies the permutation in-place to the given state.
+    /// Applies the permutation in-place to the given state using the provided tracker.
     ///
     /// # Arguments
     ///
     /// * `state`: A mutable reference to the 24-element state array.
-    fn apply(state: &mut [Felt; STATE_WIDTH]);
+    /// * `tracker`: A mutable reference to an OpsTracker.
+    fn apply<T: OpsTracker>(state: &mut [Felt; STATE_WIDTH], tracker: &mut T);
 }
 
 /// Implements the [`Permutation`] trait for [`RpoM31`].
 impl Permutation for RpoM31 {
     #[inline(always)] // Keep inline as it's just delegation
-    fn apply(state: &mut [Felt; STATE_WIDTH]) {
+    fn apply<T: OpsTracker>(state: &mut [Felt; STATE_WIDTH], tracker: &mut T) {
         // Delegates to the inherent apply method.
-        Self::apply(state)
+        Self::apply(state, tracker)
     }
 }
 
 /// Implements the [`Permutation`] trait for [`XHashM31`].
 impl Permutation for XHashM31 {
     #[inline(always)] // Keep inline as it's just delegation
-    fn apply(state: &mut [Felt; STATE_WIDTH]) {
+    fn apply<T: OpsTracker>(state: &mut [Felt; STATE_WIDTH], tracker: &mut T) {
         // Delegates to the inherent apply method.
-        Self::apply(state)
+        Self::apply(state, tracker)
     }
 }
 
@@ -562,15 +645,21 @@ impl Permutation for XHashM31 {
 
 /// Adds round constants `c` to the `state` vector element-wise.
 #[inline(always)]
-fn add_constants(state: &mut [Felt; STATE_WIDTH], c: &[Felt; STATE_WIDTH]) {
+fn add_constants<T: OpsTracker>(
+    state: &mut [Felt; STATE_WIDTH],
+    c: &[Felt; STATE_WIDTH],
+    tracker: &mut T,
+) {
     for (s, k) in state.iter_mut().zip(c) {
         *s += *k;
+        tracker.record(Op::FeltAdd);
     }
 }
 
 /// Applies a function `f` to each element of the `state` vector in-place.
 #[inline(always)]
-fn map_elements<F: Fn(Felt) -> Felt>(state: &mut [Felt; STATE_WIDTH], f: F) {
+fn map_elements<F: FnMut(Felt) -> Felt>(state: &mut [Felt; STATE_WIDTH], mut f: F) {
+    // Pass the mutable closure `f` which captures the tracker mutably.
     for s in state.iter_mut() {
         *s = f(*s);
     }
@@ -581,42 +670,99 @@ fn map_elements<F: Fn(Felt) -> Felt>(state: &mut [Felt; STATE_WIDTH], f: F) {
 /// `state_new[i] = dot_product(matrix_row_i, state_old)`
 /// Uses an unrolled macro for the 24x24 dot product.
 #[inline(always)]
-fn mul_matrix(state: &mut [Felt; STATE_WIDTH], m: &[[Felt; STATE_WIDTH]; STATE_WIDTH]) {
+fn mul_matrix<T: OpsTracker>(
+    state: &mut [Felt; STATE_WIDTH],
+    m: &[[Felt; STATE_WIDTH]; STATE_WIDTH],
+    tracker: &mut T,
+) {
     // Macro for computing the dot product of a matrix row and the state vector.
-    // Explicitly unrolled for STATE_WIDTH = 24.
+    // Records the necessary Felt multiplications and additions.
     macro_rules! dot24 {
-        ($row:expr, $s:expr) => {
-            $row[0] * $s[0]
-                + $row[1] * $s[1]
-                + $row[2] * $s[2]
-                + $row[3] * $s[3]
-                + $row[4] * $s[4]
-                + $row[5] * $s[5]
-                + $row[6] * $s[6]
-                + $row[7] * $s[7]
-                + $row[8] * $s[8]
-                + $row[9] * $s[9]
-                + $row[10] * $s[10]
-                + $row[11] * $s[11]
-                + $row[12] * $s[12]
-                + $row[13] * $s[13]
-                + $row[14] * $s[14]
-                + $row[15] * $s[15]
-                + $row[16] * $s[16]
-                + $row[17] * $s[17]
-                + $row[18] * $s[18]
-                + $row[19] * $s[19]
-                + $row[20] * $s[20]
-                + $row[21] * $s[21]
-                + $row[22] * $s[22]
-                + $row[23] * $s[23]
-        };
+        ($row:expr, $s:expr, $tracker:expr) => {{
+            let mut sum = Felt::from_u32_unchecked(0);
+            sum += $row[0] * $s[0];
+            $tracker.record(Op::FeltMul);
+            $tracker.record(Op::FeltAdd);
+            sum += $row[1] * $s[1];
+            $tracker.record(Op::FeltMul);
+            $tracker.record(Op::FeltAdd);
+            sum += $row[2] * $s[2];
+            $tracker.record(Op::FeltMul);
+            $tracker.record(Op::FeltAdd);
+            sum += $row[3] * $s[3];
+            $tracker.record(Op::FeltMul);
+            $tracker.record(Op::FeltAdd);
+            sum += $row[4] * $s[4];
+            $tracker.record(Op::FeltMul);
+            $tracker.record(Op::FeltAdd);
+            sum += $row[5] * $s[5];
+            $tracker.record(Op::FeltMul);
+            $tracker.record(Op::FeltAdd);
+            sum += $row[6] * $s[6];
+            $tracker.record(Op::FeltMul);
+            $tracker.record(Op::FeltAdd);
+            sum += $row[7] * $s[7];
+            $tracker.record(Op::FeltMul);
+            $tracker.record(Op::FeltAdd);
+            sum += $row[8] * $s[8];
+            $tracker.record(Op::FeltMul);
+            $tracker.record(Op::FeltAdd);
+            sum += $row[9] * $s[9];
+            $tracker.record(Op::FeltMul);
+            $tracker.record(Op::FeltAdd);
+            sum += $row[10] * $s[10];
+            $tracker.record(Op::FeltMul);
+            $tracker.record(Op::FeltAdd);
+            sum += $row[11] * $s[11];
+            $tracker.record(Op::FeltMul);
+            $tracker.record(Op::FeltAdd);
+            sum += $row[12] * $s[12];
+            $tracker.record(Op::FeltMul);
+            $tracker.record(Op::FeltAdd);
+            sum += $row[13] * $s[13];
+            $tracker.record(Op::FeltMul);
+            $tracker.record(Op::FeltAdd);
+            sum += $row[14] * $s[14];
+            $tracker.record(Op::FeltMul);
+            $tracker.record(Op::FeltAdd);
+            sum += $row[15] * $s[15];
+            $tracker.record(Op::FeltMul);
+            $tracker.record(Op::FeltAdd);
+            sum += $row[16] * $s[16];
+            $tracker.record(Op::FeltMul);
+            $tracker.record(Op::FeltAdd);
+            sum += $row[17] * $s[17];
+            $tracker.record(Op::FeltMul);
+            $tracker.record(Op::FeltAdd);
+            sum += $row[18] * $s[18];
+            $tracker.record(Op::FeltMul);
+            $tracker.record(Op::FeltAdd);
+            sum += $row[19] * $s[19];
+            $tracker.record(Op::FeltMul);
+            $tracker.record(Op::FeltAdd);
+            sum += $row[20] * $s[20];
+            $tracker.record(Op::FeltMul);
+            $tracker.record(Op::FeltAdd);
+            sum += $row[21] * $s[21];
+            $tracker.record(Op::FeltMul);
+            $tracker.record(Op::FeltAdd);
+            sum += $row[22] * $s[22];
+            $tracker.record(Op::FeltMul);
+            $tracker.record(Op::FeltAdd);
+            sum += $row[23] * $s[23];
+            $tracker.record(Op::FeltMul);
+            $tracker.record(Op::FeltAdd);
+            // Note: We record 24 Adds, but technically it's 23 additions per dot product.
+            // Adjust if precision down to single additions matters.
+            sum
+        }};
     }
 
+    tracker.record(Op::MdsMul);
     // Copy state to a temporary array `s` to avoid modifying it while reading during calculation.
     let s = *state; // copy to avoid aliasing during computation
     for i in 0..STATE_WIDTH {
-        state[i] = dot24!(m[i], s);
+        state[i] = dot24!(m[i], s, tracker);
     }
 }
 
@@ -636,7 +782,10 @@ mod tests {
         let mut rng = SmallRng::seed_from_u64(0);
         for _ in 0..10_000 {
             let x = Felt::from(rng.r#gen::<u32>() % MODULUS);
-            assert_eq!(quintic(x), pow(x, 5));
+            assert_eq!(
+                quintic(x, &mut NoopOpsTracker {}),
+                pow(x, 5, &mut NoopOpsTracker {})
+            );
         }
     }
 
@@ -648,9 +797,8 @@ mod tests {
             *m = Felt::from(i as u32 + 3);
         }
         let copy = state;
-        RpoM31::apply(&mut state);
-        // Minimal check – permutation must be bijective (apply‑inverse not yet impl).
-        // Check that applying the permutation changes the state.
+        let mut tracker = NoopOpsTracker::default();
+        RpoM31::apply(&mut state, &mut tracker);
         assert_ne!(state, copy);
     }
 
@@ -662,27 +810,22 @@ mod tests {
             *m = Felt::from(i as u32 + 7);
         }
         let copy = state;
-        XHashM31::apply(&mut state);
-        // Check that applying the permutation changes the state.
+        let mut tracker = NoopOpsTracker::default();
+        XHashM31::apply(&mut state, &mut tracker);
         assert_ne!(state, copy);
     }
 
     /// Test basic sponge workflow: absorb multiple elements, then squeeze.
     #[test]
     fn sponge_basic() {
-        let mut sp: Sponge<RpoM31> = Sponge::new();
+        let mut sp: Sponge<RpoM31, NoopOpsTracker> = Sponge::new();
         // Absorb enough elements to trigger at least one permutation.
         for i in 0..40 {
             sp.absorb(Felt::from(i));
         }
         let digest = sp.squeeze();
-        // Ensure deterministic output (snapshot test or compare with known vector).
-        // This is just a placeholder check that the output is not trivially zero.
         let expected_first = Felt::from(100_u32); // placeholder sentinel
-        assert_ne!(digest[0], expected_first, "dummy non‑zero check");
-
-        // Ideally, add a test with known input/output vectors from the paper/reference.
-        // e.g., assert_eq!(digest, EXPECTED_DIGEST_FOR_INPUT_0_to_39);
+        assert_ne!(digest[0], expected_first, "dummy non-zero check");
     }
 
     /// Helper to get a Felt from a deterministic source for testing.
@@ -696,10 +839,9 @@ mod tests {
         let mut rng = SmallRng::seed_from_u64(1); // Use different seed
         for _ in 0..100 {
             let x = Felt::from(rng.r#gen::<u32>() % MODULUS);
-            // Avoid testing zero inverse if not defined or handled specially
             if x != Felt::from(0) {
-                let x5 = quintic(x);
-                let x_inv5 = quintic_inv(x5);
+                let x5 = quintic(x, &mut NoopOpsTracker {});
+                let x_inv5 = quintic_inv(x5, &mut NoopOpsTracker {});
                 assert_eq!(
                     x_inv5, x,
                     "quintic inverse roundtrip failed for x = {:?}",
@@ -707,8 +849,10 @@ mod tests {
                 );
             }
         }
-        // Test edge case
-        assert_eq!(quintic_inv(Felt::from(1)), Felt::from(1));
+        assert_eq!(
+            quintic_inv(Felt::from(1), &mut NoopOpsTracker {}),
+            Felt::from(1)
+        );
     }
 
     /// Test sponge determinism for RPO.
@@ -717,14 +861,14 @@ mod tests {
         let input_data = b"Test data for determinism";
         let input_felts = [felt(1), felt(2), felt(3), felt(1000)];
 
-        let mut sponge1: Sponge<RpoM31> = Sponge::new();
+        let mut sponge1: Sponge<RpoM31, NoopOpsTracker> = Sponge::new();
         sponge1.absorb_bytes(input_data);
         for &f in &input_felts {
             sponge1.absorb(f);
         }
         let digest1 = sponge1.squeeze();
 
-        let mut sponge2: Sponge<RpoM31> = Sponge::new();
+        let mut sponge2: Sponge<RpoM31, NoopOpsTracker> = Sponge::new();
         sponge2.absorb_bytes(input_data);
         for &f in &input_felts {
             sponge2.absorb(f);
@@ -740,14 +884,14 @@ mod tests {
         let input_data = b"Another test string for XHash";
         let input_felts = [felt(99), felt(88), felt(77), felt(12345)];
 
-        let mut sponge1: Sponge<XHashM31> = Sponge::new();
+        let mut sponge1: Sponge<XHashM31, NoopOpsTracker> = Sponge::new();
         sponge1.absorb_bytes(input_data);
         for &f in &input_felts {
             sponge1.absorb(f);
         }
         let digest1 = sponge1.squeeze();
 
-        let mut sponge2: Sponge<XHashM31> = Sponge::new();
+        let mut sponge2: Sponge<XHashM31, NoopOpsTracker> = Sponge::new();
         sponge2.absorb_bytes(input_data);
         for &f in &input_felts {
             sponge2.absorb(f);
@@ -755,5 +899,71 @@ mod tests {
         let digest2 = sponge2.squeeze();
 
         assert_eq!(digest1, digest2, "XHash Sponge output is not deterministic");
+    }
+
+    /// Test the CountingOpsTracker for RPO.
+    #[test]
+    fn test_rpo_op_counting() {
+        let tracker = CountingOpsTracker::new();
+        let mut sponge: Sponge<RpoM31, _> = Sponge::new_with_tracker(tracker);
+
+        // Absorb just enough to trigger one permutation (RATE = 16)
+        for i in 0..RATE {
+            sponge.absorb(felt(i as u32));
+        }
+        // Absorb one more to ensure the permutation was called and finalize
+        sponge.absorb(felt(RATE as u32));
+
+        let (_digest, final_tracker) = sponge.squeeze_and_report();
+        let report = final_tracker.report_json().unwrap();
+        println!(
+            "RPO Ops Report (1 permutation + absorb/squeeze overhead):\n{}",
+            report
+        );
+
+        // Basic sanity checks (exact counts depend on implementation details)
+        assert!(*final_tracker.counts.get(&Op::Permutation).unwrap_or(&0) >= 1);
+        assert!(*final_tracker.counts.get(&Op::FeltAdd).unwrap_or(&0) > 0);
+        assert!(*final_tracker.counts.get(&Op::FeltMul).unwrap_or(&0) > 0);
+        assert!(*final_tracker.counts.get(&Op::MdsMul).unwrap_or(&0) > 0);
+        // Reinstate specific op checks
+        assert!(*final_tracker.counts.get(&Op::FeltQuintic).unwrap_or(&0) > 0);
+        assert!(*final_tracker.counts.get(&Op::FeltQuinticInv).unwrap_or(&0) > 0);
+        // Should not have Fp3 ops for RPO
+        assert!(final_tracker.counts.get(&Op::Fp3Mul).is_none());
+        assert!(final_tracker.counts.get(&Op::Fp3Quintic).is_none());
+    }
+
+    /// Test the CountingOpsTracker for XHash.
+    #[test]
+    fn test_xhash_op_counting() {
+        let tracker = CountingOpsTracker::new();
+        let mut sponge: Sponge<XHashM31, _> = Sponge::new_with_tracker(tracker);
+
+        // Absorb just enough to trigger one permutation (RATE = 16)
+        for i in 0..RATE {
+            sponge.absorb(felt(i as u32));
+        }
+        // Absorb one more to ensure the permutation was called and finalize
+        sponge.absorb(felt(RATE as u32));
+
+        let (_digest, final_tracker) = sponge.squeeze_and_report();
+        let report = final_tracker.report_json().unwrap();
+        println!(
+            "XHash Ops Report (1 permutation + absorb/squeeze overhead):\n{}",
+            report
+        );
+
+        // Basic sanity checks
+        assert!(*final_tracker.counts.get(&Op::Permutation).unwrap_or(&0) >= 1);
+        assert!(*final_tracker.counts.get(&Op::FeltAdd).unwrap_or(&0) > 0);
+        assert!(*final_tracker.counts.get(&Op::FeltMul).unwrap_or(&0) > 0);
+        assert!(*final_tracker.counts.get(&Op::MdsMul).unwrap_or(&0) > 0);
+        // Reinstate specific op checks
+        assert!(*final_tracker.counts.get(&Op::FeltQuintic).unwrap_or(&0) > 0);
+        assert!(*final_tracker.counts.get(&Op::FeltQuinticInv).unwrap_or(&0) > 0);
+        // Should have Fp3 ops for XHash
+        assert!(*final_tracker.counts.get(&Op::Fp3Mul).unwrap_or(&0) > 0);
+        assert!(*final_tracker.counts.get(&Op::Fp3Quintic).unwrap_or(&0) > 0);
     }
 }

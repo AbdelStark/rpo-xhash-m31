@@ -1,17 +1,17 @@
 use num_traits::identities::Zero;
 use rand::SeedableRng;
-use rpo_xhash_m31::{Felt, RpoM31, Sponge, XHashM31, mds};
+use rpo_xhash_m31::{Felt, NoopOpsTracker, RpoM31, Sponge, XHashM31, mds};
 
 /// A *very* small monte-carlo test that the two permutations disagree on random input.
 #[test]
 fn permutations_produce_distinct_output() {
     let msg = "test-vector-123-🦀";
     // RPO
-    let mut rpo = Sponge::<RpoM31>::new();
+    let mut rpo = Sponge::<RpoM31, NoopOpsTracker>::new();
     rpo.absorb_bytes(msg.as_bytes());
     let a = rpo.squeeze();
     // XHash
-    let mut xh = Sponge::<XHashM31>::new();
+    let mut xh = Sponge::<XHashM31, NoopOpsTracker>::new();
     xh.absorb_bytes(msg.as_bytes());
     let b = xh.squeeze();
     assert_ne!(a, b, "Different permutations must not collide trivially");
@@ -21,10 +21,10 @@ fn permutations_produce_distinct_output() {
 /// and *empty* messages hash to DIFFERENT digests.
 #[test]
 fn padding_domain_separation() {
-    let rpo_empty = Sponge::<RpoM31>::new();
+    let rpo_empty = Sponge::<RpoM31, NoopOpsTracker>::new();
     let empty_digest = rpo_empty.clone().squeeze();
 
-    let mut rpo_zero_block = Sponge::<RpoM31>::new();
+    let mut rpo_zero_block = Sponge::<RpoM31, NoopOpsTracker>::new();
     for _ in 0..16 {
         rpo_zero_block.absorb(Felt::from_u32_unchecked(0));
     }
@@ -93,11 +93,11 @@ fn mds_is_invertible() {
 #[test]
 fn deterministic_output() {
     let msg = "determinism!";
-    let mut a1 = Sponge::<RpoM31>::new();
+    let mut a1 = Sponge::<RpoM31, NoopOpsTracker>::new();
     a1.absorb_bytes(msg.as_bytes());
     let d1 = a1.squeeze();
 
-    let mut a2 = Sponge::<RpoM31>::new();
+    let mut a2 = Sponge::<RpoM31, NoopOpsTracker>::new();
     a2.absorb_bytes(msg.as_bytes());
     let d2 = a2.squeeze();
 
@@ -111,7 +111,7 @@ fn short_messages_never_overflow_rate() {
     use rand::Rng;
     let mut rng = rand::rngs::SmallRng::seed_from_u64(0);
     for _ in 0..10_000 {
-        let mut sp: Sponge<RpoM31> = Sponge::new();
+        let mut sp: Sponge<RpoM31, NoopOpsTracker> = Sponge::new();
         let len = rng.gen_range(0..3); // 0-2 bytes
         let mut buf = vec![0u8; len];
         rng.fill(buf.as_mut_slice());
