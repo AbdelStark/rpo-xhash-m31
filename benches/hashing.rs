@@ -1,6 +1,6 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use rand::{RngCore, SeedableRng, rngs::SmallRng};
-use rpo_xhash_m31::{Felt, RpoM31, STATE_WIDTH, Sponge, XHashM31};
+use rpo_xhash_m31::{Felt, NoopOpsTracker, RpoM31, STATE_WIDTH, Sponge, XHashM31};
 
 fn create_random_state(rng: &mut SmallRng) -> [Felt; STATE_WIDTH] {
     let mut state = [Felt::default(); STATE_WIDTH];
@@ -14,14 +14,16 @@ fn bench_permutations(c: &mut Criterion) {
     let mut group = c.benchmark_group("Permutations");
     let mut rng = SmallRng::seed_from_u64(42);
 
+    let mut ops_tracker = NoopOpsTracker {};
+
     group.bench_function("RpoM31::apply", |b| {
         let mut state = create_random_state(&mut rng);
-        b.iter(|| RpoM31::apply(black_box(&mut state)))
+        b.iter(|| RpoM31::apply(black_box(&mut state), &mut ops_tracker))
     });
 
     group.bench_function("XHashM31::apply", |b| {
         let mut state = create_random_state(&mut rng);
-        b.iter(|| XHashM31::apply(black_box(&mut state)))
+        b.iter(|| XHashM31::apply(black_box(&mut state), &mut ops_tracker))
     });
 
     group.finish();
@@ -41,7 +43,7 @@ fn bench_sponge(c: &mut Criterion) {
             &input_data,
             |b, data| {
                 b.iter(|| {
-                    let mut sponge = Sponge::<RpoM31>::new();
+                    let mut sponge = Sponge::<RpoM31, NoopOpsTracker>::new();
                     sponge.absorb_bytes(black_box(data));
                     black_box(sponge); // Prevent elimination
                 })
@@ -53,7 +55,7 @@ fn bench_sponge(c: &mut Criterion) {
             &input_data,
             |b, data| {
                 b.iter(|| {
-                    let mut sponge = Sponge::<XHashM31>::new();
+                    let mut sponge = Sponge::<XHashM31, NoopOpsTracker>::new();
                     sponge.absorb_bytes(black_box(data));
                     black_box(sponge); // Prevent elimination
                 })
@@ -61,8 +63,8 @@ fn bench_sponge(c: &mut Criterion) {
         );
     }
 
-    let mut rpo_sponge_filled = Sponge::<RpoM31>::new();
-    let mut xh_sponge_filled = Sponge::<XHashM31>::new();
+    let mut rpo_sponge_filled = Sponge::<RpoM31, NoopOpsTracker>::new();
+    let mut xh_sponge_filled = Sponge::<XHashM31, NoopOpsTracker>::new();
     let mut large_input = vec![0u8; 1024]; // Arbitrary data to fill sponge
     rng.fill_bytes(&mut large_input);
     rpo_sponge_filled.absorb_bytes(&large_input);
