@@ -802,7 +802,7 @@ mod tests {
             *m = Felt::from(i as u32 + 3);
         }
         let copy = state;
-        let mut tracker = NoopOpsTracker::default();
+        let mut tracker = NoopOpsTracker {};
         RpoM31::apply(&mut state, &mut tracker);
         assert_ne!(state, copy);
     }
@@ -815,7 +815,7 @@ mod tests {
             *m = Felt::from(i as u32 + 7);
         }
         let copy = state;
-        let mut tracker = NoopOpsTracker::default();
+        let mut tracker = NoopOpsTracker {};
         XHashM31::apply(&mut state, &mut tracker);
         assert_ne!(state, copy);
     }
@@ -936,8 +936,8 @@ mod tests {
             (RPO_ROUNDS * STATE_WIDTH) as u64
         );
         // Should not have Fp3 ops for RPO
-        assert!(tracker.counts.get(&Op::Fp3Mul).is_none());
-        assert!(tracker.counts.get(&Op::Fp3Quintic).is_none());
+        assert!(!tracker.counts.contains_key(&Op::Fp3Mul));
+        assert!(!tracker.counts.contains_key(&Op::Fp3Quintic));
     }
 
     /// Test the CountingOpsTracker for XHash.
